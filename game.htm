@@ -187,6 +187,7 @@
         const acceleration = 0.005;
         const deceleration = 0.002;
         const brakeDeceleration = 0.01;
+        const obstacleSpeed = 0.03; // A constant forward speed for obstacles
         let driveSpeed = 0;
         let currentSpeed = 0;
         const carMoveSpeed = 0.15;
@@ -210,6 +211,7 @@
         let isBraking = false;
         
         let loadedEnemyCarModel = null;
+        let buildingTexture;
 
         const roadLines = [];
         const buildings = [];
@@ -218,6 +220,7 @@
         const enemyCars = [];
         const trees = [];
         const flowers = [];
+        const roadBarriers = [];
         let ground, road;
         let dirLight;
 
@@ -243,6 +246,7 @@
         const redMaterial = new THREE.MeshLambertMaterial({ color: 0xff0000 });
         const blueMaterial = new THREE.MeshLambertMaterial({ color: 0x0000ff });
         const poleMaterial = new THREE.MeshLambertMaterial({ color: 0x333333 });
+        const barrierMaterial = new THREE.MeshLambertMaterial({ color: 0x444444 });
 
         const playerBox = new THREE.Box3();
         const enemyBoxes = new Map();
@@ -264,6 +268,32 @@
             return new THREE.MeshStandardMaterial({ map: texture, metalness: 0, roughness: 1 });
         }
         const kerbMaterial = createKerbTexture();
+
+        function createBuildingTexture() {
+            const canvas = document.createElement('canvas');
+            const textureWidth = 512;
+            const textureHeight = 512;
+            canvas.width = textureWidth;
+            canvas.height = textureHeight;
+            const context = canvas.getContext('2d');
+
+            context.fillStyle = `hsl(${Math.random() * 360}, 10%, 60%)`;
+            context.fillRect(0, 0, textureWidth, textureHeight);
+
+            // Draw windows
+            const windowWidth = 32;
+            const windowHeight = 48;
+            const gap = 16;
+            context.fillStyle = '#222233'; // Darker for windows
+
+            for (let x = gap; x < textureWidth - gap; x += windowWidth + gap) {
+                for (let y = gap; y < textureHeight - gap; y += windowHeight + gap) {
+                    context.fillRect(x, y, windowWidth, windowHeight);
+                }
+            }
+            
+            return new THREE.CanvasTexture(canvas);
+        }
 
         function init() {
             scene = new THREE.Scene();
@@ -297,6 +327,7 @@
             dirLight.shadow.camera.bottom = -50;
             scene.add(dirLight);
 
+            buildingTexture = createBuildingTexture();
             setupEnvironment();
             loadAssets();
             setupControls();
@@ -359,6 +390,22 @@
             kerbRight.receiveShadow = true;
             scene.add(kerbRight);
 
+            // Add road barriers
+            const barrierGeo = new THREE.BoxGeometry(0.5, 1, roadLength * 2);
+            const barrierLeft = new THREE.Mesh(barrierGeo, barrierMaterial);
+            barrierLeft.position.set(-roadWidth / 2 - kerbWidth - 0.25, 0.5, 0);
+            barrierLeft.castShadow = true;
+            barrierLeft.receiveShadow = true;
+            scene.add(barrierLeft);
+            roadBarriers.push(barrierLeft);
+
+            const barrierRight = new THREE.Mesh(barrierGeo, barrierMaterial);
+            barrierRight.position.set(roadWidth / 2 + kerbWidth + 0.25, 0.5, 0);
+            barrierRight.castShadow = true;
+            barrierRight.receiveShadow = true;
+            scene.add(barrierRight);
+            roadBarriers.push(barrierRight);
+
             generateRoadLines();
             generateBuildings(numBuildings);
             generateStreetLights(numLights);
@@ -393,7 +440,12 @@
                     const height = Math.random() * 30 + 10;
                     const depth = Math.random() * 8 + 4;
                     const geometry = new THREE.BoxGeometry(width, height, depth);
-                    const material = new THREE.MeshLambertMaterial({ color: Math.random() * 0xffffff });
+                    
+                    const material = new THREE.MeshLambertMaterial({ map: buildingTexture.clone() });
+                    // Randomize texture offset to make each building look unique
+                    material.map.repeat.set(width / 10, height / 10);
+                    material.map.offset.set(Math.random() * (1 - material.map.repeat.x), Math.random() * (1 - material.map.repeat.y));
+                    
                     const building = new THREE.Mesh(geometry, material);
                     building.position.set(side * (roadWidth / 2 + kerbWidth + width / 2 + Math.random() * 10), height / 2, zPos);
                     building.castShadow = true;
@@ -487,7 +539,12 @@
                     node.castShadow = true;
                     node.receiveShadow = true;
                 });
-
+                
+                // Assign a unique speed to each car
+                // Now they will always move forward relative to the player
+                enemyCar.userData.speed = Math.random() * 0.2 + 0.1;
+                enemyCar.userData.relativeZ = 0;
+                
                 const initialX = Math.random() > 0.5 ? laneOffset : -laneOffset;
                 enemyCar.position.set(initialX, carBaseY, roadLength * 0.7 + i * (roadLength / count));
                 
@@ -713,6 +770,12 @@
                     building.geometry = new THREE.BoxGeometry(width, height, depth);
                     building.position.y = height / 2;
                     building.position.x = (building.position.x > 0 ? 1 : -1) * (roadWidth / 2 + kerbWidth + width / 2 + Math.random() * 10);
+                    
+                    // Reset texture offset for recycled building
+                    if (building.material && building.material.map) {
+                        building.material.map.repeat.set(width / 10, height / 10);
+                        building.material.map.offset.set(Math.random() * (1 - building.material.map.repeat.x), Math.random() * (1 - building.material.map.repeat.y));
+                    }
                 }
             });
 
@@ -734,10 +797,13 @@
             });
 
             enemyCars.forEach(car => {
+                // If the car is too far back, recycle it
                 if (car.position.z < -roadLength / 2) {
                     const laneOffset = roadWidth / 4;
                     const newX = Math.random() > 0.5 ? laneOffset : -laneOffset;
                     car.position.set(newX, carBaseY, resetZ + Math.random() * roadLength * 0.5);
+                    // Give it a new random speed for the next run, always a positive value
+                    car.userData.speed = Math.random() * 0.2 + 0.1;
                 }
             });
 
@@ -747,6 +813,12 @@
 
             flowers.forEach(flower => {
                 if (flower.position.z < -roadLength) flower.position.z += roadLength * 2;
+            });
+
+            roadBarriers.forEach(barrier => {
+                if (barrier.position.z < -roadLength) {
+                    barrier.position.z += roadLength * 2;
+                }
             });
         }
 
@@ -802,6 +874,7 @@
             generatePoints(15);
             generateTraffic(8);
             generateTreesAndFlowers(50);
+            roadBarriers.forEach(b => {b.position.z = 0}); // Reset barriers position
 
             animate();
         }
@@ -821,19 +894,30 @@
             }
             driveSpeed = currentSpeed;
             
-            roadLines.forEach(obj => { if(obj) obj.position.z -= driveSpeed; });
-            buildings.forEach(obj => { if(obj) obj.position.z -= driveSpeed; });
-            streetLights.forEach(obj => { if(obj) obj.position.z -= driveSpeed; });
-            points.forEach(obj => { if(obj) obj.position.z -= driveSpeed; });
-            enemyCars.forEach(obj => { if(obj) obj.position.z -= driveSpeed; });
-            trees.forEach(obj => { if(obj) obj.position.z -= driveSpeed; });
-            flowers.forEach(obj => { if(obj) obj.position.z -= driveSpeed; });
+            // Move the world based on the player's speed
+            const worldMoveSpeed = Math.abs(driveSpeed);
+            const obstacleMoveSpeed = worldMoveSpeed + obstacleSpeed;
+
+            roadLines.forEach(obj => { if(obj) obj.position.z -= worldMoveSpeed; });
+            buildings.forEach(obj => { if(obj) obj.position.z -= worldMoveSpeed; });
+            streetLights.forEach(obj => { if(obj) obj.position.z -= worldMoveSpeed; });
+            points.forEach(obj => { if(obj) obj.position.z -= worldMoveSpeed; });
+            roadBarriers.forEach(obj => { if(obj) obj.position.z -= worldMoveSpeed; });
+            trees.forEach(obj => { if(obj) obj.position.z -= worldMoveSpeed; });
+            flowers.forEach(obj => { if(obj) obj.position.z -= worldMoveSpeed; });
+
+            // Move each enemy car forward, always
+            enemyCars.forEach(car => {
+                if (car) {
+                    car.position.z -= obstacleMoveSpeed;
+                }
+            });
 
             let targetX = playerCar.position.x;
             if (moveLeft) {
-                targetX -= carMoveSpeed;
-            } else if (moveRight) {
                 targetX += carMoveSpeed;
+            } else if (moveRight) {
+                targetX -= carMoveSpeed;
             }
 
             const roadBound = roadWidth / 2 - kerbWidth - carHalfWidth;
